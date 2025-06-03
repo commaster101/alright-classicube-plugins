@@ -1,0 +1,4 @@
+add +gunsv2 to map motd to enable guns in that level.
+to add a spawn point for bots run /weapon add
+for custom models to work get the na2 custom models plugin form here https://github.com/NotAwesome2/MCGalaxy-CustomModels
+have fun :D
