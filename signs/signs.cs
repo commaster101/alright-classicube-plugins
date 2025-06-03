@@ -35,6 +35,7 @@ namespace MCGalaxy
             OnLevelUnloadEvent.Register(levelUnload, Priority.Low);
             OnJoinedLevelEvent.Register(JoinedLevel, Priority.Low);
             Command.Register(new CmdSign());
+            Command.Register(new CmdSignInfo());
 
             for (byte i = 0; i < charString.Length; i++)
             {
@@ -50,6 +51,7 @@ namespace MCGalaxy
             OnLevelUnloadEvent.Unregister(levelUnload);
             OnJoinedLevelEvent.Unregister(JoinedLevel);
             Command.Unregister(Command.Find("Sign"));
+            Command.Unregister(Command.Find("SignInfo"));
         }
         static void JoinedLevel(Player p, Level prevLevel, Level level, ref bool announce)
         {
@@ -58,7 +60,7 @@ namespace MCGalaxy
         static void levelLoaded(Level lvl)
         {
 
-            string signPath = "Signs/" + lvl.name + ".txt";
+            string signPath = "extra/Signs/" + lvl.name + ".txt";
 
             if (!File.Exists(signPath))
             {
@@ -66,24 +68,27 @@ namespace MCGalaxy
                 signRenderCache[lvl.name] = new SignData[0];
                 return;
             }
-            signRenderCache.Add(lvl.name, parseSignDataArray(File.ReadAllLines(signPath)));
+            signRenderCache.Add(lvl.name, stringArrayToSignDataArray(File.ReadAllLines(signPath)));
 
         }
+
         static void levelUnload(Level lvl, ref bool cancel)
         {
             invalidateSignCache(lvl.name);
         }
+
         public static void invalidateSignCache(string levelName)
         {
             signRenderCache.Remove(levelName);
         }
+
         static void click(Player p, MouseButton button, MouseAction action, ushort yaw, ushort pitch, byte entity, ushort x, ushort y, ushort z, TargetBlockFace face)
         {
-            if (face == TargetBlockFace.AwayY || face == TargetBlockFace.TowardsY || face == TargetBlockFace.None || !p.AllowBuild) return;
             if (p.level.Config.MOTD.ToLower().Contains("-signs") || button != MouseButton.Right || action != MouseAction.Pressed) return;
-
             if (p.Extras.GetBoolean("usingSign") == false) return;
-            invalidateSignCache(p.Level.name);
+            if (face == TargetBlockFace.AwayY || face == TargetBlockFace.TowardsY || face == TargetBlockFace.None) return;
+            if (!p.level.Config.Buildable || !p.level.Config.Deletable || !p.AllowBuild) {p.Message("%fyou can't use %e/Signs %f here!"); return;}
+
             BlockID block = p.Level.GetBlock(x, y, z);
             BlockDefinition def = p.Level.GetBlockDef(block);
             byte direction = 0;
@@ -109,27 +114,44 @@ namespace MCGalaxy
                     case TargetBlockFace.AwayZ: direction = 144; xOffset = 2; zOffset = (short)((def.MaxY * 2) + 1); break;//block defs flip y and z
                 }
             }
+            SignData signData = new SignData();
+            string signPath = ("extra/Signs/" + p.Level.name + ".txt");
+            if (!File.Exists(signPath)) File.Create(signPath);
+            SignData[] signList = stringArrayToSignDataArray(File.ReadAllLines(signPath));
+
+            if (p.Extras.GetBoolean("usingSignInfo") == true)
+            {
+                signData = new SignData(((x * 32) + xOffset),((y * 32) + 20),((z * 32) + zOffset),direction,"","");//dummy sign to check position
+
+                for (int i = 0; i < signList.Length; i++)
+                {
+                    if (signsInSameSpot(signList[i],signData))
+                    {
+                        p.Message("%fSign info:");
+                        p.Message("%fX:{0} Y:{1} Z:{2}",signData.X,signData.Y,signData.Z);
+                        p.Message("%fDirection:{0}",signData.Direction);
+                        p.Message("%fText:{0}",signList[i].Text);
+                        p.Message("%fCreator:{0}",signList[i].Creator);
+                        break;
+                    }
+                }
+                p.Extras["usingSignInfo"] = false; return;
+            }
 
             signs.sendLetters(p, (x * 32) + xOffset, (y * 32) + 20, (z * 32) + zOffset, direction, p.Extras.GetString("signMessage"));//send the sign ASAP, other players can wait
-            string newSignText = p.Extras.GetString("signMessage");
-            string signPos = (((x * 32) + xOffset).ToString() + "⊕" + ((y * 32) + 20).ToString() + "⊕" + ((z * 32) + zOffset).ToString());
-            string signData = (signPos + "⊕" + direction.ToString() + "⊕" + newSignText);
-            string signPath = ("Signs/" + p.Level.name + ".txt");
-
-            if (!File.Exists(signPath)) File.Create(signPath);
-            string[] signList = File.ReadAllLines(signPath);
+            signData = new SignData(((x * 32) + xOffset),((y * 32) + 20),((z * 32) + zOffset),direction,p.Extras.GetString("signMessage"),p.name);
 
             bool replaced = false;
             bool removed = false;
             for (int i = 0; i < signList.Length; i++)
             {
-                if (signList[i].StartsWith(signPos))
+                if (signsInSameSpot(signList[i],signData))
                 {
-                    if (newSignText == "")
+                    if (signData.Text == "")
                     {
                         removed = true;
                         replaced = true;
-                        p.Message("sign removed");
+                        p.Message("%4Sign removed");
                         continue;
                     }
                     signList[i] = signData;
@@ -140,13 +162,14 @@ namespace MCGalaxy
             if (removed == true)
             {
                 string[] trimmedLines = new string[signList.Length - 1];
-                Array.Copy(signList, trimmedLines, signList.Length - 1);
+                Array.Copy(signDataArrayToStringArray(signList), trimmedLines, signList.Length - 1);
                 File.WriteAllLines(signPath, trimmedLines);
             }
             if (replaced == false) File.AppendAllText(signPath, signData + "\n");
-            else if (removed == false) File.WriteAllLines(signPath, signList);
+            else if (removed == false) File.WriteAllLines(signPath, signDataArrayToStringArray(signList));
             //p.Message("sign placed at:{0},{1},{2}", x, y, z);
             //p.Message("on face:{0}", face);
+            invalidateSignCache(p.Level.name);
             if (p.staticCommands == false) p.Extras["usingSign"] = false;
         }
 
@@ -157,9 +180,9 @@ namespace MCGalaxy
             {
                 if (!signRenderCache.ContainsKey(lvl.name))
                 {
-                    string signPath = ("Signs/" + lvl.name + ".txt");
+                    string signPath = ("extra/Signs/" + lvl.name + ".txt");
                     if (!File.Exists(signPath)) return;
-                    signRenderCache.Add(lvl.name, parseSignDataArray(File.ReadAllLines(signPath)));
+                    signRenderCache.Add(lvl.name, stringArrayToSignDataArray(File.ReadAllLines(signPath)));
                 }
             }
             Player[] players = PlayerInfo.Online.Items;
@@ -257,7 +280,14 @@ namespace MCGalaxy
                 p.Send(Packet.DefineEffect(effectID, U1, V1, U2, V2, tintRed, tintGreen, tintBlue, frameCount, particleCount, size, sizeVariation, spread, speed, gravity, baseLifetime, lifetimeVariation, expireUponTouchingGround, collidesSolid, collidesLiquid, collidesLeaves, fullBright));
             }
         }
-        static SignData[] parseSignDataArray(string[] lines)
+
+        static bool signsInSameSpot(SignData signA,SignData signB)
+        {
+            if ((signA.X == signB.X) && (signA.Y == signB.Y) && (signA.Z == signB.Z)) return true;
+            else return false;
+        }
+
+        static SignData[] stringArrayToSignDataArray(string[] lines)
         {
             int count = lines.Length;
             SignData[] result = new SignData[count];
@@ -268,19 +298,56 @@ namespace MCGalaxy
             }
             return result;
         }
+        static string[] signDataArrayToStringArray(SignData[] lines)
+        {
+            int count = lines.Length;
+            string[] result = new string[count];
+
+            for (int i = 0; i < count; i++)
+            {
+                result[i] = lines[i].ToString();
+            }
+            return result;
+        }
         public sealed class CmdSign : Command2
         {
             public override string name { get { return "Sign"; } }
             public override string type { get { return CommandTypes.Building; } }
             public override bool museumUsable { get { return false; } }
-            public override LevelPermission defaultRank { get { return LevelPermission.Builder; } }
+            public override LevelPermission defaultRank { get { return LevelPermission.AdvBuilder; } }
             public override bool SuperUseable { get { return false; } }
 
             public override void Use(Player p, string message, CommandData data)
             {
+                if (!p.level.Config.Buildable || !p.level.Config.Deletable || !p.AllowBuild) {p.Message("%fyou can't use %e/Signs %fhere!"); return;}
                 p.Extras["usingSign"] = true;
                 p.Extras["signMessage"] = message;
-                if (message == "") p.Extras["signMessage"] = null;
+                if (message == "") 
+                {
+                    p.Extras["signMessage"] = null;
+                    p.Message("%fClick on a sign to remove it");
+                }
+                else p.Message("%fClick on a wall to write text");
+            }
+
+            public override void Help(Player p)
+            {
+                p.Message("%T/Sign <some text>%H- Makes text in the world. if no text is given the sign will be removed.");
+            }
+        }
+
+        public sealed class CmdSignInfo : Command2
+        {
+            public override string name { get { return "SignInfo"; } }
+            public override string type { get { return CommandTypes.Moderation; } }
+            public override bool museumUsable { get { return false; } }
+            public override LevelPermission defaultRank { get { return LevelPermission.Guest; } }
+            public override bool SuperUseable { get { return false; } }
+
+            public override void Use(Player p, string message, CommandData data)
+            {
+                p.Extras["usingSignInfo"] = true;
+                p.Extras["usingSign"] = true;
             }
 
             public override void Help(Player p)
@@ -298,16 +365,25 @@ namespace MCGalaxy
     public int X, Y, Z;
     public byte Direction;
     public string Text;
+    public string Creator;
 
-    public SignData(int x, int y, int z, byte dir, string text) {
+    public SignData(int x, int y, int z, byte dir, string text, string creator) {
         X = x; Y = y; Z = z;
         Direction = dir;
         Text = text;
+        Creator = creator;
+    }
+
+        public SignData() {
+        X = 0; Y = 0; Z = 0;
+        Direction = 0;
+        Text = "";
+        Creator = "";
     }
 
     public override string ToString() {
         // Convert back to the file format used before
-        return (X.ToString()+"⊕"+Y.ToString()+"⊕"+Z.ToString()+"⊕"+Direction.ToString()+"⊕"+Text);
+        return (X.ToString()+"⊕"+Y.ToString()+"⊕"+Z.ToString()+"⊕"+Direction.ToString()+"⊕"+Text+"⊕"+Creator);
     }
 
     public static SignData FromString(string line) {
@@ -317,7 +393,7 @@ namespace MCGalaxy
             int.Parse(parts[1]),
             int.Parse(parts[2]),
             byte.Parse(parts[3]),
-            parts[4]
+            parts[4],parts[5]
         );
     }
 }
